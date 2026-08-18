@@ -1,0 +1,52 @@
+<#
+.SYNOPSIS
+    This PowerShell script ensures that Windows 11 prompts users for a password when waking from sleep while on AC power (plugged in).
+
+.NOTES
+    Author          : Aaron M Brown
+    LinkedIn        : https://www.linkedin.com/in/aaron-m-brown-9a2b76258/
+    GitHub          : https://github.com/AaronMBrown01
+    Date Created    : 2026-08-18
+    Last Modified   : 2026-08-18
+    Version         : 1.0
+    CVEs            : N/A
+    Plugin IDs      : N/A
+    STIG-ID         : 
+    Documentation   : https://stigaview.com/products/win11/v2r8/WN11-CC-000150/
+
+.TESTED ON
+    Date(s) Tested  : 
+    Tested By       : 
+    Systems Tested  : 
+    PowerShell Ver. : 
+
+.USAGE
+    Put any usage instructions here.
+    Example syntax:
+    PS C:\> .\__remediation_template(STIG-ID-WN11-CC-000150).ps1 
+#>
+
+# YOUR CODE GOES HERE
+
+# 1. Install PolicyFileEditor module from PSGallery (if not installed)
+if (-not (Get-Module -ListAvailable -Name PolicyFileEditor)) {
+    Install-Module -Name PolicyFileEditor -Scope CurrentUser -Force -AllowClobber
+}
+
+Import-Module PolicyFileEditor
+
+# 2. Target the local Machine registry.pol file
+$PolFilePath = "$env:windir\System32\GroupPolicy\Machine\registry.pol"
+$RegKey      = "Software\Policies\Microsoft\Power\PowerSettings\0e796bdb-100d-47d6-a2d5-f7d2daa51f51"
+$RegValue    = "ACSettingIndex"
+
+# 3. Write entry directly to registry.pol
+Set-PolicyFileEntry -Path $PolFilePath -Key $RegKey -ValueName $RegValue -Data 1 -Type DWord
+
+# 4. Enforce runtime registry & power manager updates
+Set-ItemProperty -Path "HKLM:\$RegKey" -Name $RegValue -Value 1 -Type DWord -Force
+powercfg /setacvalueindex SCHEME_CURRENT 238c9fa8-0aad-41ed-83f4-97be242c8f20 0e796bdb-100d-44b3-a1c6-302324021272 1
+powercfg /setactive SCHEME_CURRENT
+gpupdate /force | Out-Null
+
+Write-Host "SUCCESS: Updated registry.pol. Open gpedit.msc to verify 'Enabled' state." -ForegroundColor Green
