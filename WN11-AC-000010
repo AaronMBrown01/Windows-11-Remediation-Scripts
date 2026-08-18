@@ -1,0 +1,112 @@
+<#
+.SYNOPSIS
+    This PowerShell script ensures that the account lockout feature, when enabled, prevents brute-force password attacks on the system. The higher this value is, the less effective the account lockout feature will be in protecting the local system. The number of bad logon attempts must be reasonably small to minimize the possibility of a successful password attack, while allowing for honest errors made during a normal user logon.
+
+
+.NOTES
+    Author          : Aaron M Brown
+    LinkedIn        : https://www.linkedin.com/in/aaron-m-brown-9a2b76258/
+    GitHub          : https://github.com/AaronMBrown01
+    Date Created    : 2026-08-18
+    Last Modified   : 2026-08-18
+    Version         : 1.0
+    CVEs            : N/A
+    Plugin IDs      : N/A
+    STIG-ID         : 
+    Documentation   : https://stigaview.com/products/win11/v2r1/WN11-AC-000010/
+
+.TESTED ON
+    Date(s) Tested  : 
+    Tested By       : 
+    Systems Tested  : 
+    PowerShell Ver. : 
+
+.USAGE
+    Put any usage instructions here.
+    Example syntax:
+    PS C:\> .\__remediation_template(STIG ID: WN11-AC-000010).ps1 
+#>
+
+# YOUR CODE GOES HERE
+
+# =====================================================================
+# STIG Remediation Script
+# STIG ID:          WN11-AC-000010
+# Vulnerability ID: V-253298
+# Severity:         CAT II
+# CCI:              CCI-000044
+#
+# Requirement:
+# Account lockout threshold must be between 1 and 3 invalid attempts.
+# =====================================================================
+
+# Require Administrator privileges
+$CurrentUser = [Security.Principal.WindowsIdentity]::GetCurrent()
+$Principal = New-Object Security.Principal.WindowsPrincipal($CurrentUser)
+
+if (-not $Principal.IsInRole(
+    [Security.Principal.WindowsBuiltInRole]:: Administrator
+)) {
+    Write-Error "Administrator privileges are required."
+    exit 1
+}
+
+Write-Host "Checking WN11-AC-000010..." -ForegroundColor Cyan
+
+# Export current local security policy
+$TempFile = Join-Path $env:TEMP "STIG_SecurityPolicy.cfg"
+
+secedit /export /cfg $TempFile /quiet
+
+$Policy = Get-Content $TempFile
+
+$ThresholdLine = $Policy |
+    Where-Object { $_ -match "^LockoutBadCount\s*=" }
+
+if ($ThresholdLine) {
+
+    $CurrentThreshold = [int](
+        ($ThresholdLine -split "=")[1].Trim()
+    )
+
+    Write-Host "Current Account Lockout Threshold: $CurrentThreshold"
+
+    if ($CurrentThreshold -ge 1 -and $CurrentThreshold -le 3) {
+
+        Write-Host "COMPLIANT: WN11-AC-000010" -ForegroundColor Green
+        Write-Host "No remediation required."
+
+    }
+    else {
+
+        Write-Host "NON-COMPLIANT: WN11-AC-000010" -ForegroundColor Yellow
+        Write-Host "Setting Account Lockout Threshold to 3..."
+
+        net accounts /lockoutthreshold:3 | Out-Null
+
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "REMEDIATED: Account Lockout Threshold = 3" `
+                -ForegroundColor Green
+        }
+        else {
+            Write-Error "Remediation failed."
+            exit 1
+        }
+    }
+
+}
+else {
+
+    Write-Warning "Unable to determine the current lockout threshold."
+
+    Write-Host "Applying STIG-required value of 3..."
+
+    net accounts /lockoutthreshold:3 | Out-Null
+
+}
+
+# Clean up temporary file
+Remove-Item $TempFile -Force -ErrorAction SilentlyContinue
+
+Write-Host "`nEffective account policy:" -ForegroundColor Cyan
+net accounts
