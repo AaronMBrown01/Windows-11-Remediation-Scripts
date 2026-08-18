@@ -1,0 +1,82 @@
+<#
+.SYNOPSIS
+    This setting controls whether users can supply passwords automatically as part of their remote desktop connection. Disabling this setting allows anyone to use stored credentials in a connection item to connect to the terminal server. Running this script forces Windows to always demand a password when someone connects via Remote Desktop (RDP).
+.
+
+.NOTES
+    Author          : Aaron M Brown
+    LinkedIn        : https://www.linkedin.com/in/aaron-m-brown-9a2b76258/
+    GitHub          : https://github.com/AaronMBrown01
+    Date Created    : 2026-08-18
+    Last Modified   : 2026-08-18
+    Version         : 1.0
+    CVEs            : N/A
+    Plugin IDs      : N/A
+    STIG-ID         : WN11-CC-000280
+    Documentation   : https://stigaview.com/products/win11/v2r8/WN11-CC-000280/
+
+.TESTED ON
+    Date(s) Tested  : 
+    Tested By       : 
+    Systems Tested  : 
+    PowerShell Ver. : 
+
+.USAGE
+    Put any usage instructions here.
+    Example syntax:
+    PS C:\> .\__remediation_template(STIG ID: WN11-CC-000280).ps1 
+#>
+
+# YOUR CODE GOES HERE
+
+# Requires Administrator Privileges
+if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Error "This script must be run as Administrator."
+    exit 1
+}
+
+$ErrorActionPreference = "Stop"
+
+# Target Configuration (DISA STIG WN11-CC-000280)
+$RegKeyPath   = "Software\Policies\Microsoft\Windows NT\Terminal Services"
+$FullRegPath  = "HKLM:\$RegKeyPath"
+$RegValueName = "fPromptForPassword"
+$RegValueData = 1
+
+$GpoDirPath  = "$env:windir\System32\GroupPolicy\Machine"
+$PolFilePath = "$GpoDirPath\registry.pol"
+
+Write-Host "=== Clearing Old Local Policy & Enforcing Enabled ===" -ForegroundColor Cyan
+
+# 1. Ensure Directory Exists & Remove Stale Local Policy Cache
+if (Test-Path -Path $PolFilePath) {
+    Remove-Item -Path $PolFilePath -Force
+}
+if (-not (Test-Path -Path $GpoDirPath)) {
+    $null = New-Item -Path $GpoDirPath -ItemType Directory -Force
+}
+
+# 2. Build Fresh Binary registry.pol File
+$Header     = [byte[]]@(0x50, 0x52, 0x65, 0x67, 0x01, 0x00, 0x00, 0x00) # PReg header
+$KeyBytes   = [System.Text.Encoding]::Unicode.GetBytes($RegKeyPath) + @(0x00, 0x00)
+$ValBytes   = [System.Text.Encoding]::Unicode.GetBytes($RegValueName) + @(0x00, 0x00)
+$TypeBytes  = [BitConverter]::GetBytes([uint32]4)                     # REG_DWORD
+$SizeBytes  = [BitConverter]::GetBytes([uint32]4)                     # 4 Bytes Data
+$DataBytes  = [BitConverter]::GetBytes([uint32]$RegValueData)
+
+$EntryBytes = @(0x5B, 0x00) + $KeyBytes + @(0x3B, 0x00) + $ValBytes + @(0x3B, 0x00) + $TypeBytes + @(0x3B, 0x00) + $SizeBytes + @(0x3B, 0x00) + $DataBytes + @(0x5D, 0x00)
+$PolBytes   = $Header + $EntryBytes
+
+[System.IO.File]::WriteAllBytes($PolFilePath, $PolBytes)
+
+# 3. Apply to Live Registry
+if (-not (Test-Path -Path $FullRegPath)) {
+    $null = New-Item -Path $FullRegPath -Force
+}
+Set-ItemProperty -Path $FullRegPath -Name $RegValueName -Value $RegValueData -Type DWord -Force
+
+# 4. Force Group Policy Update
+gpupdate /force | Out-Null
+
+Write-Host "=== SUCCESS: Local Policy Database Rebuilt. ===" -ForegroundColor Green
+Write-Host "Action Required: Close gpedit.msc completely, then reopen it to view the updated status." -ForegroundColor Yellow
