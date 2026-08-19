@@ -1,7 +1,6 @@
 <#
 .SYNOPSIS
     This setting controls whether users can supply passwords automatically as part of their remote desktop connection. Disabling this setting allows anyone to use stored credentials in a connection item to connect to the terminal server. Running this script forces Windows to always demand a password when someone connects via Remote Desktop (RDP).
-.
 
 .NOTES
     Author          : Aaron M Brown
