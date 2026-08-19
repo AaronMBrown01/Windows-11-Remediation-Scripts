@@ -24,7 +24,7 @@
 .USAGE
     Put any usage instructions here.
     Example syntax:
-    PS C:\> .\STIG ID-WN11-AC-000010.ps1 
+    PS C:\> .\STIG-ID-WN11-AC-000010.ps1 
 #>
 
 # YOUR CODE GOES HERE
