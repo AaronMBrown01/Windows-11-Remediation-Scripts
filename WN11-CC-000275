@@ -1,0 +1,65 @@
+<#
+.SYNOPSIS
+    Preventing users from sharing the local drives on their client computers with Remote Session Hosts that they access helps reduce possible exposure of sensitive data.
+
+.NOTES
+    Author          : Aaron M Brown
+    LinkedIn        : https://www.linkedin.com/in/aaron-m-brown-9a2b76258/
+    GitHub          : https://github.com/AaronMBrown01
+    Date Created    : 2026-08-18
+    Last Modified   : 2026-08-18
+    Version         : 1.0
+    CVEs            : N/A
+    Plugin IDs      : N/A
+    STIG-ID         : WN11-CC-000275
+    Documentation   : https://stigaview.com/products/win11/v2r8/WN11-CC-000275/
+
+.TESTED ON
+    Date(s) Tested  : 
+    Tested By       : 
+    Systems Tested  : 
+    PowerShell Ver. : 
+
+.USAGE
+    Put any usage instructions here.
+    Example syntax:
+    PS C:\> .\STIG-ID-WN11-CC-000275.ps1 
+#>
+
+# YOUR CODE GOES HERE
+
+
+# Ensure administrative privileges
+if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Error "This script must be run as an Administrator."
+    exit 1
+}
+
+# Install and import the PolicyFileEditor module if not already available
+if (-not (Get-Module -ListAvailable -Name PolicyFileEditor)) {
+    Write-Host "Installing PolicyFileEditor module..." -ForegroundColor Yellow
+    Install-Module -Name PolicyFileEditor -Force -Scope CurrentUser
+}
+Import-Module PolicyFileEditor
+
+$PolFilePath = "$env:SystemRoot\System32\GroupPolicy\Machine\registry.pol"
+$RegKey      = "SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
+$RegValue    = "fDisableCdm"
+$RegData     = 1
+
+# 1. Update the Local GPO state (registry.pol) so it displays in gpedit.msc
+Set-PolicyFileEntry -Path $PolFilePath -Key $RegKey -ValueName $RegValue -Data $RegData -Type DWord
+
+# 2. Update active registry enforcement
+$RegistryPath = "HKLM:\$RegKey"
+if (-not (Test-Path -Path $RegistryPath)) {
+    New-Item -Path $RegistryPath -Force | Out-Null
+}
+Set-ItemProperty -Path $RegistryPath -Name $RegValue -Value $RegData -Type DWord -Force
+
+# 3. Refresh Group Policy engine
+gpupdate /force
+
+Write-Host "Local GPO updated. 'Do not allow drive redirection' now shows as Enabled in gpedit.msc." -ForegroundColor Green
+
+
