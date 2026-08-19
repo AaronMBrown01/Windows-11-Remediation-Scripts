@@ -1,0 +1,51 @@
+<#
+.SYNOPSIS
+    User Account Control (UAC) is a security mechanism for limiting the elevation of privileges, including administrative accounts, unless authorized. This setting configures the elevation requirements for logged on administrators to complete a task that requires raised privileges.
+
+
+.NOTES
+    Author          : Aaron M Brown
+    LinkedIn        : https://www.linkedin.com/in/aaron-m-brown-9a2b76258/
+    GitHub          : https://github.com/AaronMBrown01
+    Date Created    : 2026-08-18
+    Last Modified   : 2026-08-18
+    Version         : 1.0
+    CVEs            : N/A
+    Plugin IDs      : N/A
+    STIG-ID         : WN11-SO-000250
+    Documentation   : https://stigaview.com/products/win11/v2r8/WN11-SO-000250/
+
+.TESTED ON
+    Date(s) Tested  : 
+    Tested By       : 
+    Systems Tested  : 
+    PowerShell Ver. : 
+
+.USAGE
+    Put any usage instructions here.
+    Example syntax:
+    PS C:\> .\STIG-ID-WN11-SO-000250.ps1 
+#>
+
+# YOUR CODE GOES HERE
+
+
+# Ensure administrative privileges
+if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Error "This script must be run as an Administrator."
+    exit 1
+}
+
+$RegistryPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
+$ValueName    = "ConsentPromptBehaviorAdmin"
+$DesiredValue = 2
+
+# Create registry key path if missing
+if (-not (Test-Path -Path $RegistryPath)) {
+    New-Item -Path $RegistryPath -Force | Out-Null
+}
+
+# Apply the security policy value as a DWORD (REG_DWORD)
+Set-ItemProperty -Path $RegistryPath -Name $ValueName -Value $DesiredValue -Type DWord -Force
+
+Write-Host "STIG WN11-SO-000250 applied successfully. ConsentPromptBehaviorAdmin set to $DesiredValue (Prompt for consent on the secure desktop)." -ForegroundColor Green
