@@ -23,7 +23,7 @@ Configuring the system to disable IPv6 source routing protects against spoofing.
 .USAGE
     Put any usage instructions here.
     Example syntax:
-    PS C:\> .\__remediation_template(STIG ID: WN11-AC-000010).ps1 
+    PS C:\> .\STIG ID-WN11-AC-000020.ps1 
 #>
 
 # YOUR CODE GOES HERE
