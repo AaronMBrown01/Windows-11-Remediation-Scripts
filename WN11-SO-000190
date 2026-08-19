@@ -23,7 +23,7 @@
 .USAGE
     Put any usage instructions here.
     Example syntax:
-    PS C:\> .\__remediation_template(STIG ID: WN11-CC-000280).ps1 
+    PS C:\> .\STIG-ID-WN11-CC-000190.ps1 
 #>
 
 # YOUR CODE GOES HERE
