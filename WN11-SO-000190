@@ -1,0 +1,57 @@
+<#
+.SYNOPSIS
+    This setting controls whether users can supply passwords automatically as part of their remote desktop connection. Disabling this setting allows anyone to use stored credentials in a connection item to connect to the terminal server. Running this script forces Windows to always demand a password when someone connects via Remote Desktop (RDP).
+.
+
+.NOTES
+    Author          : Aaron M Brown
+    LinkedIn        : https://www.linkedin.com/in/aaron-m-brown-9a2b76258/
+    GitHub          : https://github.com/AaronMBrown01
+    Date Created    : 2026-08-18
+    Last Modified   : 2026-08-18
+    Version         : 1.0
+    CVEs            : N/A
+    Plugin IDs      : N/A
+    STIG-ID         : WN11-SO-000190
+    Documentation   : https://stigaview.com/products/win11/v2r8/WN11-SO-000190/
+
+.TESTED ON
+    Date(s) Tested  : 
+    Tested By       : 
+    Systems Tested  : 
+    PowerShell Ver. : 
+
+.USAGE
+    Put any usage instructions here.
+    Example syntax:
+    PS C:\> .\__remediation_template(STIG ID: WN11-CC-000280).ps1 
+#>
+
+# YOUR CODE GOES HERE
+
+# Ensure administrative privileges
+if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Error "This script must be run as an Administrator."
+    exit 1
+}
+
+$RegistryPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Kerberos\Parameters"
+$ValueName    = "SupportedEncryptionTypes"
+
+# Bitmask breakdown:
+# 0x00000008 (8)          = AES128_HMAC_SHA1
+# 0x00000010 (16)         = AES256_HMAC_SHA1
+# 0x7FFFFFE0 (2147483616) = Future encryption types
+# ----------------------------------------------
+# Combined Hex: 0x7FFFFFF8 | Decimal: 2147483640
+$DesiredValue = 2147483640
+
+# Create registry key path if missing
+if (-not (Test-Path -Path $RegistryPath)) {
+    New-Item -Path $RegistryPath -Force | Out-Null
+}
+
+# Apply the security policy value
+Set-ItemProperty -Path $RegistryPath -Name $ValueName -Value $DesiredValue -Type DWord -Force
+
+Write-Host "STIG WN11-SO-000190 applied successfully. SupportedEncryptionTypes set to 0x7FFFFFF8 ($DesiredValue)." -ForegroundColor Green
