@@ -1,8 +1,6 @@
 <#
 .SYNOPSIS
-    This PowerShell script ensures that the account lockout feature, when enabled, prevents brute-force password attacks on the system. The higher this value is, the less effective the account lockout feature will be in protecting the local system. The number of bad logon attempts must be reasonably small to minimize the possibility of a successful password attack, while allowing for honest errors made during a normal user logon.
-
-
+    The use of complex passwords increases their strength against guessing and brute-force attacks. This setting configures the system to verify that newly created passwords conform to the Windows password complexity policy.
 .NOTES
     Author          : Aaron M Brown
     LinkedIn        : https://www.linkedin.com/in/aaron-m-brown-9a2b76258/
