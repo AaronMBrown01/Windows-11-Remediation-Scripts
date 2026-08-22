@@ -29,22 +29,65 @@
 # YOUR CODE GOES HERE
 
 
-# Ensure administrative privileges
+<#
+.SYNOPSIS
+    Self-Contained STIG WN11-CC-000190 Remediation for Fresh Windows Builds.
+    Sets 'Turn off AutoPlay' to 'Enabled: All Drives' in both GPO UI and Registry.
+#>
+
+# Requires Administrator privileges
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Write-Error "This script must be run as an Administrator."
-    exit 1
+    Write-Error "Please run this script from an elevated PowerShell prompt (Run as Administrator)."
+    exit
 }
 
-$RegistryPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer"
-$ValueName    = "NoDriveTypeAutoRun"
-$DesiredValue = 255
+Write-Host "--- STIG WN11-CC-000190 Setup on New Machine ---" -ForegroundColor Cyan
 
-# Create registry key path if missing
-if (-not (Test-Path -Path $RegistryPath)) {
-    New-Item -Path $RegistryPath -Force | Out-Null
+# 1. SETUP PREREQUISITES FOR FRESH OS
+# Force TLS 1.2 for PowerShell Gallery connectivity
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+# Set Execution Policy for current process to allow module installation
+Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
+
+# Install NuGet Provider silently if missing
+if (-not (Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue)) {
+    Write-Host "Installing required NuGet provider..." -ForegroundColor Yellow
+    Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force | Out-Null
 }
 
-# Apply the security policy value as a DWORD (REG_DWORD)
-Set-ItemProperty -Path $RegistryPath -Name $ValueName -Value $DesiredValue -Type DWord -Force
+# Trust PSGallery repository to avoid prompt popups
+Set-PSRepository -Name 'PSGallery' -InstallationPolicy Trusted
 
-Write-Host "STIG WN11-CC-000190 applied successfully. NoDriveTypeAutoRun set to $DesiredValue (Disabled on All Drives)." -ForegroundColor Green
+# Install PolicyFileEditor module if missing
+if (-not (Get-Module -ListAvailable -Name PolicyFileEditor)) {
+    Write-Host "Installing PolicyFileEditor module..." -ForegroundColor Yellow
+    Install-Module -Name PolicyFileEditor -Scope CurrentUser -Force | Out-Null
+}
+
+Import-Module PolicyFileEditor
+
+# 2. WRITE TO LOCAL GROUP POLICY (POL FILE)
+# Updates gpedit.msc GUI
+$polPath = "$env:SystemRoot\System32\GroupPolicy\Machine\registry.pol"
+$regKey  = "SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer"
+$valName = "NoDriveTypeAutoRun"
+$valData = 255 # 0xFF (All Drives)
+
+Write-Host "Writing policy to Local GPO database..." -ForegroundColor Yellow
+Set-PolicyFileEntry -Path $polPath -Key $regKey -ValueName $valName -Data $valData -Type DWord
+
+# 3. DIRECT REGISTRY FALLBACK
+# Ensures immediate registry compliance
+$regPathPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer"
+if (-not (Test-Path $regPathPath)) {
+    New-Item -Path $regPathPath -Force | Out-Null
+}
+New-ItemProperty -Path $regPathPath -Name $valName -PropertyType DWord -Value $valData -Force | Out-Null
+
+# 4. FORCE REFRESH SYSTEM POLICY
+Write-Host "Refreshing Group Policy..." -ForegroundColor Yellow
+gpupdate /force | Out-Null
+
+Write-Host "[SUCCESS] STIG WN11-CC-000190 applied. Reopen gpedit.msc to verify 'Enabled: All Drives'." -ForegroundColor Green
+
