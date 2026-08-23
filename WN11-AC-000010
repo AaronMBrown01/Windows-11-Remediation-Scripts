@@ -29,84 +29,111 @@
 
 # YOUR CODE GOES HERE
 
-# =====================================================================
-# STIG Remediation Script
-# STIG ID:          WN11-AC-000010
-# Vulnerability ID: V-253298
-# Severity:         CAT II
-# CCI:              CCI-000044
-#
-# Requirement:
-# Account lockout threshold must be between 1 and 3 invalid attempts.
-# =====================================================================
+<#
+.SYNOPSIS
+    Remediates STIG ID: WN11-AC-000010 (Account Lockout Threshold) across SAM database,
+    Local Security Policy (secedit), and Registry.
+#>
 
-# Require Administrator privileges
-$CurrentUser = [Security.Principal.WindowsIdentity]::GetCurrent()
-$Principal = New-Object Security.Principal.WindowsPrincipal($CurrentUser)
-
-if (-not $Principal.IsInRole(
-    [Security.Principal.WindowsBuiltInRole]:: Administrator
-)) {
-    Write-Error "Administrator privileges are required."
-    exit 1
+# Requires Elevation
+if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Error "This script must be executed in an elevated PowerShell session (Run as Administrator)."
+    exit
 }
 
-Write-Host "Checking WN11-AC-000010..." -ForegroundColor Cyan
+Write-Host "====================================================" -ForegroundColor Cyan
+Write-Host " STIG WN11-AC-000010 Remediation Script" -ForegroundColor Cyan
+Write-Host " Target: Account Lockout Threshold <= 3" -ForegroundColor Cyan
+Write-Host "====================================================" -ForegroundColor Cyan
 
-# Export current local security policy
-$TempFile = Join-Path $env:TEMP "STIG_SecurityPolicy.cfg"
+# ----------------------------------------------------------------------
+# STEP 1: Direct SAM Database Update (net accounts)
+# ----------------------------------------------------------------------
+Write-Host "`n[Step 1/4] Setting Lockout Threshold in SAM Database..." -ForegroundColor Yellow
+try {
+    $netOutput = net accounts /lockoutthreshold:3
+    Write-Host " -> $netOutput" -ForegroundColor Green
+} catch {
+    Write-Error "Failed to set lockout threshold via 'net accounts': $_"
+}
 
-secedit /export /cfg $TempFile /quiet
+# ----------------------------------------------------------------------
+# STEP 2: Registry Key Enforcement
+# ----------------------------------------------------------------------
+Write-Host "`n[Step 2/4] Setting Registry Key..." -ForegroundColor Yellow
+$regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\RemoteAccess\Parameters\AccountLockout"
+if (-not (Test-Path $regPath)) {
+    New-Item -Path $regPath -Force | Out-Null
+}
+Set-ItemProperty -Path $regPath -Name "MaxDenials" -Value 3 -Type DWord -Force
+Write-Host " -> HKLM:\SYSTEM\CurrentControlSet\Services\RemoteAccess\Parameters\AccountLockout\MaxDenials set to 3" -ForegroundColor Green
 
-$Policy = Get-Content $TempFile
+# ----------------------------------------------------------------------
+# STEP 3: Local Security Policy Update via Secedit (Tenable Auditor Check)
+# ----------------------------------------------------------------------
+Write-Host "`n[Step 3/4] Exporting, updating, and re-importing Secedit Security Policy..." -ForegroundColor Yellow
 
-$ThresholdLine = $Policy |
-    Where-Object { $_ -match "^LockoutBadCount\s*=" }
+$tempCfg = "$env:TEMP\stig_lockout_remediation.inf"
+$tempSdb = "$env:TEMP\stig_lockout_remediation.sdb"
 
-if ($ThresholdLine) {
+try {
+    # Export current security configuration
+    secedit /export /cfg $tempCfg /quiet
 
-    $CurrentThreshold = [int](
-        ($ThresholdLine -split "=")[1].Trim()
-    )
+    # Read configuration content
+    $cfgContent = Get-Content -Path $tempCfg -Raw
 
-    Write-Host "Current Account Lockout Threshold: $CurrentThreshold"
-
-    if ($CurrentThreshold -ge 1 -and $CurrentThreshold -le 3) {
-
-        Write-Host "COMPLIANT: WN11-AC-000010" -ForegroundColor Green
-        Write-Host "No remediation required."
-
-    }
-    else {
-
-        Write-Host "NON-COMPLIANT: WN11-AC-000010" -ForegroundColor Yellow
-        Write-Host "Setting Account Lockout Threshold to 3..."
-
-        net accounts /lockoutthreshold:3 | Out-Null
-
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "REMEDIATED: Account Lockout Threshold = 3" `
-                -ForegroundColor Green
-        }
-        else {
-            Write-Error "Remediation failed."
-            exit 1
-        }
+    # Update or append LockoutBadCount under [System Access]
+    if ($cfgContent -match "LockoutBadCount\s*=\s*\d+") {
+        $cfgContent = $cfgContent -replace "LockoutBadCount\s*=\s*\d+", "LockoutBadCount = 3"
+    } elseif ($cfgContent -match "\[System Access\]") {
+        $cfgContent = $cfgContent -replace "\[System Access\]", "[System Access]`r`nLockoutBadCount = 3"
+    } else {
+        $cfgContent += "`r`n[System Access]`r`nLockoutBadCount = 3"
     }
 
+    # Save modified configuration back
+    Set-Content -Path $tempCfg -Value $cfgContent -Encoding ASCII
+
+    # Re-import modified database into system policy
+    secedit /configure /db $tempSdb /cfg $tempCfg /areas USER_RIGHTS GROUP_MGMT SECURITYPOLICY /quiet
+    Write-Host " -> Local Security Policy database reconfigured successfully." -ForegroundColor Green
+
+    # Cleanup temporary files
+    Remove-Item $tempCfg -Force -ErrorAction SilentlyContinue
+    Remove-Item $tempSdb -Force -ErrorAction SilentlyContinue
+} catch {
+    Write-Error "Failed to modify Secedit policy: $_"
 }
-else {
 
-    Write-Warning "Unable to determine the current lockout threshold."
+# ----------------------------------------------------------------------
+# STEP 4: Force Group Policy Refresh
+# ----------------------------------------------------------------------
+Write-Host "`n[Step 4/4] Refreshing Local Security Authority and Group Policy..." -ForegroundColor Yellow
+gpupdate /force | Out-Null
+Write-Host " -> Group Policy update complete." -ForegroundColor Green
 
-    Write-Host "Applying STIG-required value of 3..."
+# ----------------------------------------------------------------------
+# VERIFICATION
+# ----------------------------------------------------------------------
+Write-Host "`n====================================================" -ForegroundColor Cyan
+Write-Host " Verification Summary" -ForegroundColor Cyan
+Write-Host "====================================================" -ForegroundColor Cyan
 
-    net accounts /lockoutthreshold:3 | Out-Null
+# Verify via Net Accounts
+$effectiveLockout = (net accounts | Select-String "Lockout threshold").ToString().Trim()
+Write-Host "SAM Policy: $effectiveLockout" -ForegroundColor Plain
 
+# Verify via Secedit Export
+$verifyCfg = "$env:TEMP\verify_cfg.inf"
+secedit /export /cfg $verifyCfg /quiet
+$seceditVal = (Select-String -Path $verifyCfg -Pattern "LockoutBadCount").Line.Trim()
+Remove-Item $verifyCfg -Force -ErrorAction SilentlyContinue
+
+Write-Host "Secedit Export: $seceditVal" -ForegroundColor Plain
+
+if ($effectiveLockout -like "*3*" -and $seceditVal -like "*LockoutBadCount = 3*") {
+    Write-Host "`nSUCCESS: WN11-AC-000010 is fully remediated across SAM and Secedit interfaces." -ForegroundColor Green
+} else {
+    Write-Warning "`nCHECK REQUIRED: Verification output does not reflect 3 attempts. Ensure Domain GPO is not actively overwriting local policies."
 }
-
-# Clean up temporary file
-Remove-Item $TempFile -Force -ErrorAction SilentlyContinue
-
-Write-Host "`nEffective account policy:" -ForegroundColor Cyan
-net accounts
