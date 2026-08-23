@@ -29,37 +29,436 @@
 # YOUR CODE GOES HERE
 
 
-# Ensure administrative privileges
-if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Write-Error "This script must be run as an Administrator."
+# =====================================================================
+# STIG ID: WN11-CC-000275
+#
+# Do not allow drive redirection = Enabled
+#
+# Required registry setting:
+# HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services
+# fDisableCdm = 1 (REG_DWORD)
+#
+# This script:
+#   1. Downloads Microsoft's LGPO utility if needed
+#   2. Extracts LGPO.exe
+#   3. Verifies Microsoft digital signature
+#   4. Writes the setting into Local Group Policy (Registry.pol)
+#   5. Runs gpupdate
+#   6. Verifies Registry.pol
+#   7. Verifies the effective registry value
+# =====================================================================
+
+$ErrorActionPreference = "Stop"
+
+# ---------------------------------------------------------------------
+# VARIABLES
+# ---------------------------------------------------------------------
+
+$STIGFolder = "C:\STIG"
+$LGPOZip    = Join-Path $STIGFolder "LGPO.zip"
+$ExtractDir = Join-Path $STIGFolder "LGPO"
+
+$PolicyKey  = "SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
+$RegPath    = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
+
+$ValueName     = "fDisableCdm"
+$RequiredValue = 1
+
+$RegistryPol = "$env:SystemRoot\System32\GroupPolicy\Machine\Registry.pol"
+
+$PolicyFile = Join-Path $STIGFolder "WN11-CC-000275-LGPO.txt"
+
+
+# ---------------------------------------------------------------------
+# ADMINISTRATOR CHECK
+# ---------------------------------------------------------------------
+
+$Identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+
+$Principal = New-Object Security.Principal.WindowsPrincipal($Identity)
+
+if (-not $Principal.IsInRole(
+    [Security.Principal.WindowsBuiltInRole]::Administrator
+)) {
+    Write-Host ""
+    Write-Host "ERROR: Run PowerShell as Administrator." -ForegroundColor Red
     exit 1
 }
 
-# Install and import the PolicyFileEditor module if not already available
-if (-not (Get-Module -ListAvailable -Name PolicyFileEditor)) {
-    Write-Host "Installing PolicyFileEditor module..." -ForegroundColor Yellow
-    Install-Module -Name PolicyFileEditor -Force -Scope CurrentUser
+
+Write-Host ""
+Write-Host "========================================================" -ForegroundColor Cyan
+Write-Host " WN11-CC-000275 Automated Remediation"
+Write-Host "========================================================" -ForegroundColor Cyan
+Write-Host ""
+
+
+# ---------------------------------------------------------------------
+# CREATE WORKING DIRECTORY
+# ---------------------------------------------------------------------
+
+if (-not (Test-Path $STIGFolder)) {
+
+    Write-Host "Creating $STIGFolder..." -ForegroundColor Cyan
+
+    New-Item `
+        -Path $STIGFolder `
+        -ItemType Directory `
+        -Force |
+        Out-Null
 }
-Import-Module PolicyFileEditor
 
-$PolFilePath = "$env:SystemRoot\System32\GroupPolicy\Machine\registry.pol"
-$RegKey      = "SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
-$RegValue    = "fDisableCdm"
-$RegData     = 1
 
-# 1. Update the Local GPO state (registry.pol) so it displays in gpedit.msc
-Set-PolicyFileEntry -Path $PolFilePath -Key $RegKey -ValueName $RegValue -Data $RegData -Type DWord
+# ---------------------------------------------------------------------
+# FIND EXISTING LGPO.EXE
+# ---------------------------------------------------------------------
 
-# 2. Update active registry enforcement
-$RegistryPath = "HKLM:\$RegKey"
-if (-not (Test-Path -Path $RegistryPath)) {
-    New-Item -Path $RegistryPath -Force | Out-Null
+$LGPO = Get-ChildItem `
+    -Path $STIGFolder `
+    -Filter "LGPO.exe" `
+    -File `
+    -Recurse `
+    -ErrorAction SilentlyContinue |
+    Select-Object -First 1 -ExpandProperty FullName
+
+
+# ---------------------------------------------------------------------
+# DOWNLOAD LGPO IF NOT PRESENT
+# ---------------------------------------------------------------------
+
+if (-not $LGPO) {
+
+    Write-Host "LGPO.exe not found." -ForegroundColor Yellow
+    Write-Host "Downloading Microsoft LGPO.zip..." -ForegroundColor Cyan
+    Write-Host ""
+
+    # Current Microsoft-hosted LGPO package
+    $LGPOUrl = "https://download.microsoft.com/download/8/5/C/85C25433-A1B0-4FFA-9429-7E023E7DA8D8/LGPO.zip"
+
+    try {
+
+        # Ensure TLS 1.2 is available
+        [Net.ServicePointManager]::SecurityProtocol = `
+            [Net.ServicePointManager]::SecurityProtocol -bor `
+            [Net.SecurityProtocolType]::Tls12
+
+        Invoke-WebRequest `
+            -Uri $LGPOUrl `
+            -OutFile $LGPOZip `
+            -UseBasicParsing
+
+    }
+    catch {
+
+        Write-Host ""
+        Write-Host "ERROR: Unable to download LGPO.zip." -ForegroundColor Red
+        Write-Host $_.Exception.Message -ForegroundColor Red
+        exit 1
+    }
+
+
+    if (-not (Test-Path $LGPOZip)) {
+
+        Write-Host "ERROR: LGPO.zip was not downloaded." -ForegroundColor Red
+        exit 1
+    }
+
+
+    Write-Host "Download completed:" -ForegroundColor Green
+    Write-Host $LGPOZip
+    Write-Host ""
+
+
+    # -----------------------------------------------------------------
+    # EXTRACT LGPO
+    # -----------------------------------------------------------------
+
+    Write-Host "Extracting LGPO.zip..." -ForegroundColor Cyan
+
+    if (Test-Path $ExtractDir) {
+
+        Remove-Item `
+            $ExtractDir `
+            -Recurse `
+            -Force
+    }
+
+    Expand-Archive `
+        -Path $LGPOZip `
+        -DestinationPath $ExtractDir `
+        -Force
+
+
+    # -----------------------------------------------------------------
+    # LOCATE LGPO.EXE
+    # -----------------------------------------------------------------
+
+    $LGPO = Get-ChildItem `
+        -Path $ExtractDir `
+        -Filter "LGPO.exe" `
+        -File `
+        -Recurse |
+        Select-Object -First 1 -ExpandProperty FullName
+
+
+    if (-not $LGPO) {
+
+        Write-Host ""
+        Write-Host "ERROR: LGPO.exe was not found after extraction." `
+            -ForegroundColor Red
+
+        exit 1
+    }
 }
-Set-ItemProperty -Path $RegistryPath -Name $RegValue -Value $RegData -Type DWord -Force
 
-# 3. Refresh Group Policy engine
-gpupdate /force
 
-Write-Host "Local GPO updated. 'Do not allow drive redirection' now shows as Enabled in gpedit.msc." -ForegroundColor Green
+Write-Host "LGPO.exe located:" -ForegroundColor Green
+Write-Host $LGPO
+Write-Host ""
+
+
+# ---------------------------------------------------------------------
+# VERIFY MICROSOFT DIGITAL SIGNATURE
+# ---------------------------------------------------------------------
+
+Write-Host "Checking LGPO.exe digital signature..." -ForegroundColor Cyan
+
+$Signature = Get-AuthenticodeSignature $LGPO
+
+Write-Host "Signature Status : $($Signature.Status)"
+Write-Host "Signer           : $($Signature.SignerCertificate.Subject)"
+Write-Host ""
+
+
+if ($Signature.Status -ne "Valid") {
+
+    Write-Host "ERROR: LGPO.exe does not have a valid digital signature." `
+        -ForegroundColor Red
+
+    exit 1
+}
+
+
+if ($Signature.SignerCertificate.Subject -notmatch "Microsoft") {
+
+    Write-Host "ERROR: LGPO.exe is not signed by Microsoft." `
+        -ForegroundColor Red
+
+    exit 1
+}
+
+
+Write-Host "PASS: Microsoft signature verified." -ForegroundColor Green
+Write-Host ""
+
+
+# ---------------------------------------------------------------------
+# CREATE LGPO POLICY FILE
+#
+# IMPORTANT:
+# Empty lines must actually be empty. LGPO can reject files containing
+# spaces/tabs on otherwise blank lines.
+# ---------------------------------------------------------------------
+
+$PolicyText = @(
+    "Computer"
+    $PolicyKey
+    $ValueName
+    "DWORD:1"
+    ""
+) -join "`r`n"
+
+
+[System.IO.File]::WriteAllText(
+    $PolicyFile,
+    $PolicyText,
+    [System.Text.Encoding]::ASCII
+)
+
+
+Write-Host "Policy file created:" -ForegroundColor Cyan
+Write-Host $PolicyFile
+Write-Host ""
+
+Get-Content $PolicyFile | Out-Host
+
+
+# ---------------------------------------------------------------------
+# APPLY POLICY USING LGPO
+# ---------------------------------------------------------------------
+
+Write-Host ""
+Write-Host "Applying policy to Local Group Policy..." -ForegroundColor Cyan
+Write-Host ""
+
+& $LGPO /v /t $PolicyFile
+
+$LGPOExit = $LASTEXITCODE
+
+
+if ($LGPOExit -ne 0) {
+
+    Write-Host ""
+    Write-Host "ERROR: LGPO.exe returned exit code $LGPOExit." `
+        -ForegroundColor Red
+
+    exit 1
+}
+
+
+Write-Host ""
+Write-Host "LGPO policy import completed successfully." `
+    -ForegroundColor Green
+
+
+# ---------------------------------------------------------------------
+# FORCE GROUP POLICY UPDATE
+# ---------------------------------------------------------------------
+
+Write-Host ""
+Write-Host "Running Group Policy update..." -ForegroundColor Cyan
+Write-Host ""
+
+gpupdate.exe /target:computer /force
+
+if ($LASTEXITCODE -ne 0) {
+
+    Write-Host ""
+    Write-Host "WARNING: gpupdate returned exit code $LASTEXITCODE." `
+        -ForegroundColor Yellow
+}
+
+
+# ---------------------------------------------------------------------
+# VERIFY REGISTRY.POL
+# ---------------------------------------------------------------------
+
+Write-Host ""
+Write-Host "Checking Machine Registry.pol..." -ForegroundColor Cyan
+Write-Host ""
+
+
+if (-not (Test-Path $RegistryPol)) {
+
+    Write-Host "FAIL: Registry.pol does not exist." -ForegroundColor Red
+    exit 1
+}
+
+
+$ParsedPolicy = & $LGPO /parse /m $RegistryPol
+
+$ParsedPolicy | Out-Host
+
+
+$PolicyKeyFound = $ParsedPolicy -match `
+    [regex]::Escape($PolicyKey)
+
+$ValueFound = $ParsedPolicy -match `
+    [regex]::Escape($ValueName)
+
+$DWORDFound = $ParsedPolicy -match `
+    "DWORD:1"
+
+
+if ($PolicyKeyFound -and $ValueFound -and $DWORDFound) {
+
+    Write-Host ""
+    Write-Host "PASS: Setting exists in Local Group Policy Registry.pol." `
+        -ForegroundColor Green
+
+}
+else {
+
+    Write-Host ""
+    Write-Host "FAIL: Setting was not found in Registry.pol." `
+        -ForegroundColor Red
+
+    exit 1
+}
+
+
+# ---------------------------------------------------------------------
+# VERIFY EFFECTIVE REGISTRY VALUE
+# ---------------------------------------------------------------------
+
+Write-Host ""
+Write-Host "Checking effective STIG registry value..." `
+    -ForegroundColor Cyan
+
+
+try {
+
+    $CurrentValue = (
+        Get-ItemProperty `
+            -Path $RegPath `
+            -Name $ValueName `
+            -ErrorAction Stop
+    ).$ValueName
+
+}
+catch {
+
+    Write-Host ""
+    Write-Host "FAIL: fDisableCdm does not exist." `
+        -ForegroundColor Red
+
+    exit 1
+}
+
+
+Write-Host ""
+Write-Host "Registry Path : HKLM\$PolicyKey"
+Write-Host "Value Name    : $ValueName"
+Write-Host "Value Type    : REG_DWORD"
+Write-Host "Required      : $RequiredValue"
+Write-Host "Actual        : $CurrentValue"
+Write-Host ""
+
+
+if ($CurrentValue -eq $RequiredValue) {
+
+    Write-Host "PASS: Effective registry value is correct." `
+        -ForegroundColor Green
+
+}
+else {
+
+    Write-Host "FAIL: Effective registry value is incorrect." `
+        -ForegroundColor Red
+
+    exit 1
+}
+
+
+# ---------------------------------------------------------------------
+# FINAL RESULT
+# ---------------------------------------------------------------------
+
+Write-Host ""
+Write-Host "========================================================" -ForegroundColor Green
+Write-Host " WN11-CC-000275 - PASS"
+Write-Host "========================================================" -ForegroundColor Green
+
+Write-Host ""
+Write-Host "Local Group Policy : Configured"
+Write-Host "Registry.pol       : Verified"
+Write-Host "fDisableCdm        : REG_DWORD 0x1"
+Write-Host ""
+
+Write-Host "Close gpedit.msc if it is open, then reopen it."
+Write-Host ""
+Write-Host "Navigate to:"
+Write-Host ""
+Write-Host "Computer Configuration"
+Write-Host " > Administrative Templates"
+Write-Host " > Windows Components"
+Write-Host " > Remote Desktop Services"
+Write-Host " > Remote Desktop Session Host"
+Write-Host " > Device and Resource Redirection"
+Write-Host ""
+Write-Host '"Do not allow drive redirection" should now show Enabled.'
+Write-Host ""
+
+
 
 
