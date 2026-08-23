@@ -28,25 +28,290 @@
 
 # YOUR CODE GOES HERE
 
-# 1. Install PolicyFileEditor module from PSGallery (if not installed)
-if (-not (Get-Module -ListAvailable -Name PolicyFileEditor)) {
-    Install-Module -Name PolicyFileEditor -Scope CurrentUser -Force -AllowClobber
+# ================================================================
+# STIG ID: WN11-CC-000150
+#
+# Require a password when a computer wakes (plugged in)
+#
+# Configures:
+# Computer Configuration
+#   Administrative Templates
+#     System
+#       Power Management
+#         Sleep Settings
+#           Require a password when a computer wakes (plugged in)
+#
+# Required Registry Setting:
+#
+# HKLM\SOFTWARE\Policies\Microsoft\Power\PowerSettings\
+# 0e796bdb-100d-47d6-a2d5-f7d2daa51f51
+#
+# ACSettingIndex = 1 (REG_DWORD)
+#
+# REQUIREMENT:
+# Microsoft LGPO.exe
+# ================================================================
+
+
+# ------------------------------------------------
+# Verify Administrator privileges
+# ------------------------------------------------
+
+$CurrentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+
+$Principal = New-Object Security.Principal.WindowsPrincipal(
+    $CurrentIdentity
+)
+
+if (-not $Principal.IsInRole(
+    [Security.Principal.WindowsBuiltInRole]::Administrator
+)) {
+
+    Write-Host ""
+    Write-Host "ERROR: PowerShell must be run as Administrator." `
+        -ForegroundColor Red
+
+    exit 1
 }
 
-Import-Module PolicyFileEditor
 
-# 2. Target the local Machine registry.pol file
-$PolFilePath = "$env:windir\System32\GroupPolicy\Machine\registry.pol"
-$RegKey      = "Software\Policies\Microsoft\Power\PowerSettings\0e796bdb-100d-47d6-a2d5-f7d2daa51f51"
-$RegValue    = "ACSettingIndex"
+# ------------------------------------------------
+# Locate LGPO.exe
+# ------------------------------------------------
 
-# 3. Write entry directly to registry.pol
-Set-PolicyFileEntry -Path $PolFilePath -Key $RegKey -ValueName $RegValue -Data 1 -Type DWord
+$PossibleLGPOPaths = @(
+    "$PSScriptRoot\LGPO.exe",
+    "C:\Windows\System32\LGPO.exe",
+    "C:\Tools\LGPO.exe",
+    "C:\LGPO\LGPO.exe"
+)
 
-# 4. Enforce runtime registry & power manager updates
-Set-ItemProperty -Path "HKLM:\$RegKey" -Name $RegValue -Value 1 -Type DWord -Force
-powercfg /setacvalueindex SCHEME_CURRENT 238c9fa8-0aad-41ed-83f4-97be242c8f20 0e796bdb-100d-44b3-a1c6-302324021272 1
-powercfg /setactive SCHEME_CURRENT
-gpupdate /force | Out-Null
+$LGPO = $PossibleLGPOPaths |
+    Where-Object { Test-Path $_ } |
+    Select-Object -First 1
 
-Write-Host "SUCCESS: Updated registry.pol. Open gpedit.msc to verify 'Enabled' state." -ForegroundColor Green
+
+if (-not $LGPO) {
+
+    Write-Host ""
+    Write-Host "ERROR: LGPO.exe was not found." `
+        -ForegroundColor Red
+
+    Write-Host ""
+    Write-Host "Place LGPO.exe in the same folder as this script."
+    Write-Host ""
+
+    exit 1
+}
+
+
+Write-Host ""
+Write-Host "LGPO utility found:" -ForegroundColor Cyan
+Write-Host $LGPO
+
+
+# ------------------------------------------------
+# STIG configuration
+# ------------------------------------------------
+
+$PolicyPath = "SOFTWARE\Policies\Microsoft\Power\PowerSettings\0e796bdb-100d-47d6-a2d5-f7d2daa51f51"
+
+$RegistryPath = "HKLM:\SOFTWARE\Policies\Microsoft\Power\PowerSettings\0e796bdb-100d-47d6-a2d5-f7d2daa51f51"
+
+$ValueName = "ACSettingIndex"
+
+$RequiredValue = 1
+
+
+# ------------------------------------------------
+# Create temporary LGPO text file
+#
+# LGPO text format:
+#
+# Computer
+# <registry path>
+# <value name>
+# DWORD:<value>
+# ------------------------------------------------
+
+$LGPOText = @"
+Computer
+$PolicyPath
+$ValueName
+DWORD:1
+"@
+
+
+$TempFile = Join-Path $env:TEMP "WN11-CC-000150.txt"
+
+$LGPOText | Set-Content `
+    -Path $TempFile `
+    -Encoding ASCII `
+    -Force
+
+
+Write-Host ""
+Write-Host "====================================================="
+Write-Host " Configuring WN11-CC-000150"
+Write-Host "====================================================="
+Write-Host ""
+
+
+# ------------------------------------------------
+# Apply setting to Local Group Policy
+# ------------------------------------------------
+
+Write-Host "Writing setting to Local Group Policy..." `
+    -ForegroundColor Cyan
+
+& $LGPO /t $TempFile
+
+
+if ($LASTEXITCODE -ne 0) {
+
+    Write-Host ""
+    Write-Host "ERROR: LGPO.exe failed to apply the policy." `
+        -ForegroundColor Red
+
+    Remove-Item $TempFile -Force -ErrorAction SilentlyContinue
+
+    exit 1
+}
+
+
+Write-Host ""
+Write-Host "Local Group Policy updated successfully." `
+    -ForegroundColor Green
+
+
+# ------------------------------------------------
+# Force Group Policy refresh
+# ------------------------------------------------
+
+Write-Host ""
+Write-Host "Refreshing Group Policy..." `
+    -ForegroundColor Cyan
+
+gpupdate /target:computer /force
+
+
+# ------------------------------------------------
+# Directly verify / reinforce registry value
+# ------------------------------------------------
+
+Write-Host ""
+Write-Host "Verifying registry configuration..." `
+    -ForegroundColor Cyan
+
+
+if (-not (Test-Path $RegistryPath)) {
+
+    New-Item `
+        -Path $RegistryPath `
+        -Force |
+        Out-Null
+}
+
+
+New-ItemProperty `
+    -Path $RegistryPath `
+    -Name $ValueName `
+    -Value $RequiredValue `
+    -PropertyType DWord `
+    -Force |
+    Out-Null
+
+
+# ------------------------------------------------
+# Read back result
+# ------------------------------------------------
+
+try {
+
+    $Result = Get-ItemProperty `
+        -Path $RegistryPath `
+        -Name $ValueName `
+        -ErrorAction Stop
+
+    $CurrentValue = $Result.$ValueName
+
+}
+catch {
+
+    Write-Host ""
+    Write-Host "FAIL - Registry value could not be read." `
+        -ForegroundColor Red
+
+    exit 1
+}
+
+
+# ------------------------------------------------
+# Final STIG verification
+# ------------------------------------------------
+
+Write-Host ""
+Write-Host "====================================================="
+Write-Host " WN11-CC-000150 Verification"
+Write-Host "====================================================="
+Write-Host ""
+
+Write-Host "Registry Path:"
+Write-Host "HKLM\SOFTWARE\Policies\Microsoft\Power\PowerSettings\0e796bdb-100d-47d6-a2d5-f7d2daa51f51"
+
+Write-Host ""
+Write-Host "Value Name : $ValueName"
+Write-Host "Value Type : REG_DWORD"
+Write-Host "Value      : $CurrentValue"
+Write-Host ""
+
+
+if ($CurrentValue -eq $RequiredValue) {
+
+    Write-Host "PASS - WN11-CC-000150 is configured correctly." `
+        -ForegroundColor Green
+
+    Write-Host ""
+    Write-Host "Expected:"
+    Write-Host "ACSettingIndex = 1"
+    Write-Host ""
+    Write-Host "Actual:"
+    Write-Host "ACSettingIndex = $CurrentValue"
+
+}
+else {
+
+    Write-Host "FAIL - WN11-CC-000150 is NOT configured correctly." `
+        -ForegroundColor Red
+
+    exit 1
+}
+
+
+# ------------------------------------------------
+# Cleanup
+# ------------------------------------------------
+
+Remove-Item `
+    $TempFile `
+    -Force `
+    -ErrorAction SilentlyContinue
+
+
+Write-Host ""
+Write-Host "Configuration complete." `
+    -ForegroundColor Green
+
+Write-Host ""
+Write-Host "Open gpedit.msc and navigate to:"
+Write-Host ""
+Write-Host "Computer Configuration"
+Write-Host " > Administrative Templates"
+Write-Host " > System"
+Write-Host " > Power Management"
+Write-Host " > Sleep Settings"
+Write-Host ""
+Write-Host '"Require a password when a computer wakes (plugged in)"'
+Write-Host ""
+Write-Host "The policy should now show as Enabled."
+Write-Host ""
