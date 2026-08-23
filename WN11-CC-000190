@@ -29,65 +29,441 @@
 # YOUR CODE GOES HERE
 
 
-<#
-.SYNOPSIS
-    Self-Contained STIG WN11-CC-000190 Remediation for Fresh Windows Builds.
-    Sets 'Turn off AutoPlay' to 'Enabled: All Drives' in both GPO UI and Registry.
-#>
+# =====================================================================
+# STIG ID: WN11-CC-000190
+#
+# Turn off AutoPlay = Enabled: All drives
+#
+# Required registry setting:
+# HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer
+#
+# NoDriveTypeAutoRun = 255 (REG_DWORD)
+#
+# This script:
+#   1. Uses existing LGPO.exe or downloads it from Microsoft
+#   2. Verifies LGPO.exe is Microsoft-signed
+#   3. Writes the setting into Local Group Policy
+#   4. Runs gpupdate
+#   5. Verifies Registry.pol
+#   6. Verifies the effective STIG registry value
+# =====================================================================
 
-# Requires Administrator privileges
-if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Write-Error "Please run this script from an elevated PowerShell prompt (Run as Administrator)."
-    exit
+$ErrorActionPreference = "Stop"
+
+# ---------------------------------------------------------------------
+# VARIABLES
+# ---------------------------------------------------------------------
+
+$STIGFolder = "C:\STIG"
+$LGPOZip    = Join-Path $STIGFolder "LGPO.zip"
+$ExtractDir = Join-Path $STIGFolder "LGPO"
+
+$PolicyKey = "SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer"
+
+$RegPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer"
+
+$ValueName     = "NoDriveTypeAutoRun"
+$RequiredValue = 255
+
+$RegistryPol = "$env:SystemRoot\System32\GroupPolicy\Machine\Registry.pol"
+
+$PolicyFile = Join-Path $STIGFolder "WN11-CC-000190-LGPO.txt"
+
+
+# ---------------------------------------------------------------------
+# ADMINISTRATOR CHECK
+# ---------------------------------------------------------------------
+
+$Identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+
+$Principal = New-Object Security.Principal.WindowsPrincipal($Identity)
+
+if (-not $Principal.IsInRole(
+    [Security.Principal.WindowsBuiltInRole]::Administrator
+)) {
+    Write-Host ""
+    Write-Host "ERROR: Run PowerShell as Administrator." -ForegroundColor Red
+    exit 1
 }
 
-Write-Host "--- STIG WN11-CC-000190 Setup on New Machine ---" -ForegroundColor Cyan
 
-# 1. SETUP PREREQUISITES FOR FRESH OS
-# Force TLS 1.2 for PowerShell Gallery connectivity
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+Write-Host ""
+Write-Host "========================================================" -ForegroundColor Cyan
+Write-Host " WN11-CC-000190 Automated Remediation"
+Write-Host "========================================================" -ForegroundColor Cyan
+Write-Host ""
 
-# Set Execution Policy for current process to allow module installation
-Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
 
-# Install NuGet Provider silently if missing
-if (-not (Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue)) {
-    Write-Host "Installing required NuGet provider..." -ForegroundColor Yellow
-    Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force | Out-Null
+# ---------------------------------------------------------------------
+# CREATE WORKING DIRECTORY
+# ---------------------------------------------------------------------
+
+if (-not (Test-Path $STIGFolder)) {
+
+    Write-Host "Creating $STIGFolder..." -ForegroundColor Cyan
+
+    New-Item `
+        -Path $STIGFolder `
+        -ItemType Directory `
+        -Force |
+        Out-Null
 }
 
-# Trust PSGallery repository to avoid prompt popups
-Set-PSRepository -Name 'PSGallery' -InstallationPolicy Trusted
 
-# Install PolicyFileEditor module if missing
-if (-not (Get-Module -ListAvailable -Name PolicyFileEditor)) {
-    Write-Host "Installing PolicyFileEditor module..." -ForegroundColor Yellow
-    Install-Module -Name PolicyFileEditor -Scope CurrentUser -Force | Out-Null
+# ---------------------------------------------------------------------
+# FIND EXISTING LGPO.EXE
+# ---------------------------------------------------------------------
+
+$LGPO = Get-ChildItem `
+    -Path $STIGFolder `
+    -Filter "LGPO.exe" `
+    -File `
+    -Recurse `
+    -ErrorAction SilentlyContinue |
+    Select-Object -First 1 -ExpandProperty FullName
+
+
+# ---------------------------------------------------------------------
+# DOWNLOAD LGPO IF NOT PRESENT
+# ---------------------------------------------------------------------
+
+if (-not $LGPO) {
+
+    Write-Host "LGPO.exe not found." -ForegroundColor Yellow
+    Write-Host "Downloading Microsoft LGPO.zip..." -ForegroundColor Cyan
+    Write-Host ""
+
+    $LGPOUrl = "https://download.microsoft.com/download/8/5/C/85C25433-A1B0-4FFA-9429-7E023E7DA8D8/LGPO.zip"
+
+    try {
+
+        [Net.ServicePointManager]::SecurityProtocol = `
+            [Net.ServicePointManager]::SecurityProtocol -bor `
+            [Net.SecurityProtocolType]::Tls12
+
+        Invoke-WebRequest `
+            -Uri $LGPOUrl `
+            -OutFile $LGPOZip `
+            -UseBasicParsing
+
+    }
+    catch {
+
+        Write-Host ""
+        Write-Host "ERROR: Unable to download LGPO.zip." -ForegroundColor Red
+        Write-Host $_.Exception.Message -ForegroundColor Red
+        exit 1
+    }
+
+
+    if (-not (Test-Path $LGPOZip)) {
+
+        Write-Host "ERROR: LGPO.zip was not downloaded." -ForegroundColor Red
+        exit 1
+    }
+
+
+    Write-Host "Download completed:" -ForegroundColor Green
+    Write-Host $LGPOZip
+    Write-Host ""
+
+
+    # -----------------------------------------------------------------
+    # EXTRACT LGPO
+    # -----------------------------------------------------------------
+
+    Write-Host "Extracting LGPO.zip..." -ForegroundColor Cyan
+
+    if (Test-Path $ExtractDir) {
+
+        Remove-Item `
+            $ExtractDir `
+            -Recurse `
+            -Force
+    }
+
+    Expand-Archive `
+        -Path $LGPOZip `
+        -DestinationPath $ExtractDir `
+        -Force
+
+
+    # -----------------------------------------------------------------
+    # LOCATE LGPO.EXE
+    # -----------------------------------------------------------------
+
+    $LGPO = Get-ChildItem `
+        -Path $ExtractDir `
+        -Filter "LGPO.exe" `
+        -File `
+        -Recurse |
+        Select-Object -First 1 -ExpandProperty FullName
+
+
+    if (-not $LGPO) {
+
+        Write-Host ""
+        Write-Host "ERROR: LGPO.exe was not found after extraction." `
+            -ForegroundColor Red
+
+        exit 1
+    }
 }
 
-Import-Module PolicyFileEditor
 
-# 2. WRITE TO LOCAL GROUP POLICY (POL FILE)
-# Updates gpedit.msc GUI
-$polPath = "$env:SystemRoot\System32\GroupPolicy\Machine\registry.pol"
-$regKey  = "SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer"
-$valName = "NoDriveTypeAutoRun"
-$valData = 255 # 0xFF (All Drives)
+Write-Host "LGPO.exe located:" -ForegroundColor Green
+Write-Host $LGPO
+Write-Host ""
 
-Write-Host "Writing policy to Local GPO database..." -ForegroundColor Yellow
-Set-PolicyFileEntry -Path $polPath -Key $regKey -ValueName $valName -Data $valData -Type DWord
 
-# 3. DIRECT REGISTRY FALLBACK
-# Ensures immediate registry compliance
-$regPathPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer"
-if (-not (Test-Path $regPathPath)) {
-    New-Item -Path $regPathPath -Force | Out-Null
+# ---------------------------------------------------------------------
+# VERIFY MICROSOFT DIGITAL SIGNATURE
+# ---------------------------------------------------------------------
+
+Write-Host "Checking LGPO.exe digital signature..." -ForegroundColor Cyan
+
+$Signature = Get-AuthenticodeSignature $LGPO
+
+Write-Host "Signature Status : $($Signature.Status)"
+Write-Host "Signer           : $($Signature.SignerCertificate.Subject)"
+Write-Host ""
+
+
+if ($Signature.Status -ne "Valid") {
+
+    Write-Host "ERROR: LGPO.exe does not have a valid digital signature." `
+        -ForegroundColor Red
+
+    exit 1
 }
-New-ItemProperty -Path $regPathPath -Name $valName -PropertyType DWord -Value $valData -Force | Out-Null
 
-# 4. FORCE REFRESH SYSTEM POLICY
-Write-Host "Refreshing Group Policy..." -ForegroundColor Yellow
-gpupdate /force | Out-Null
 
-Write-Host "[SUCCESS] STIG WN11-CC-000190 applied. Reopen gpedit.msc to verify 'Enabled: All Drives'." -ForegroundColor Green
+if ($Signature.SignerCertificate.Subject -notmatch "Microsoft") {
+
+    Write-Host "ERROR: LGPO.exe is not signed by Microsoft." `
+        -ForegroundColor Red
+
+    exit 1
+}
+
+
+Write-Host "PASS: Microsoft signature verified." -ForegroundColor Green
+Write-Host ""
+
+
+# ---------------------------------------------------------------------
+# CREATE LGPO POLICY FILE
+# ---------------------------------------------------------------------
+
+$PolicyText = @(
+    "Computer"
+    $PolicyKey
+    $ValueName
+    "DWORD:255"
+    ""
+) -join "`r`n"
+
+
+[System.IO.File]::WriteAllText(
+    $PolicyFile,
+    $PolicyText,
+    [System.Text.Encoding]::ASCII
+)
+
+
+Write-Host "Policy file created:" -ForegroundColor Cyan
+Write-Host $PolicyFile
+Write-Host ""
+
+Get-Content $PolicyFile | Out-Host
+
+
+# ---------------------------------------------------------------------
+# APPLY POLICY USING LGPO
+# ---------------------------------------------------------------------
+
+Write-Host ""
+Write-Host "Applying policy to Local Group Policy..." -ForegroundColor Cyan
+Write-Host ""
+
+& $LGPO /v /t $PolicyFile
+
+$LGPOExit = $LASTEXITCODE
+
+
+if ($LGPOExit -ne 0) {
+
+    Write-Host ""
+    Write-Host "ERROR: LGPO.exe returned exit code $LGPOExit." `
+        -ForegroundColor Red
+
+    exit 1
+}
+
+
+Write-Host ""
+Write-Host "LGPO policy import completed successfully." `
+    -ForegroundColor Green
+
+
+# ---------------------------------------------------------------------
+# FORCE GROUP POLICY UPDATE
+# ---------------------------------------------------------------------
+
+Write-Host ""
+Write-Host "Running Group Policy update..." -ForegroundColor Cyan
+Write-Host ""
+
+gpupdate.exe /target:computer /force
+
+if ($LASTEXITCODE -ne 0) {
+
+    Write-Host ""
+    Write-Host "WARNING: gpupdate returned exit code $LASTEXITCODE." `
+        -ForegroundColor Yellow
+}
+
+
+# ---------------------------------------------------------------------
+# VERIFY REGISTRY.POL
+# ---------------------------------------------------------------------
+
+Write-Host ""
+Write-Host "Checking Machine Registry.pol..." -ForegroundColor Cyan
+Write-Host ""
+
+
+if (-not (Test-Path $RegistryPol)) {
+
+    Write-Host "FAIL: Registry.pol does not exist." -ForegroundColor Red
+    exit 1
+}
+
+
+$ParsedPolicy = & $LGPO /parse /m $RegistryPol
+
+$ParsedPolicy | Out-Host
+
+
+$PolicyKeyFound = $ParsedPolicy -match `
+    [regex]::Escape($PolicyKey)
+
+$ValueFound = $ParsedPolicy -match `
+    [regex]::Escape($ValueName)
+
+$DWORDFound = $ParsedPolicy -match `
+    "DWORD:255"
+
+
+if ($PolicyKeyFound -and $ValueFound -and $DWORDFound) {
+
+    Write-Host ""
+    Write-Host "PASS: Setting exists in Local Group Policy Registry.pol." `
+        -ForegroundColor Green
+
+}
+else {
+
+    Write-Host ""
+    Write-Host "FAIL: Setting was not found in Registry.pol." `
+        -ForegroundColor Red
+
+    exit 1
+}
+
+
+# ---------------------------------------------------------------------
+# VERIFY EFFECTIVE REGISTRY VALUE
+# ---------------------------------------------------------------------
+
+Write-Host ""
+Write-Host "Checking effective STIG registry value..." `
+    -ForegroundColor Cyan
+
+
+try {
+
+    $CurrentValue = (
+        Get-ItemProperty `
+            -Path $RegPath `
+            -Name $ValueName `
+            -ErrorAction Stop
+    ).$ValueName
+
+}
+catch {
+
+    Write-Host ""
+    Write-Host "FAIL: NoDriveTypeAutoRun does not exist." `
+        -ForegroundColor Red
+
+    exit 1
+}
+
+
+Write-Host ""
+Write-Host "Registry Path : HKLM\$PolicyKey"
+Write-Host "Value Name    : $ValueName"
+Write-Host "Value Type    : REG_DWORD"
+Write-Host "Required      : $RequiredValue"
+Write-Host "Actual        : $CurrentValue"
+Write-Host ""
+
+
+if ($CurrentValue -eq $RequiredValue) {
+
+    Write-Host "PASS: Effective registry value is correct." `
+        -ForegroundColor Green
+
+}
+else {
+
+    Write-Host "FAIL: Effective registry value is incorrect." `
+        -ForegroundColor Red
+
+    exit 1
+}
+
+
+# ---------------------------------------------------------------------
+# REG.EXE VERIFICATION
+# ---------------------------------------------------------------------
+
+Write-Host ""
+Write-Host "REG.EXE verification:" -ForegroundColor Cyan
+Write-Host ""
+
+reg query `
+    "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer" `
+    /v NoDriveTypeAutoRun
+
+
+# ---------------------------------------------------------------------
+# FINAL RESULT
+# ---------------------------------------------------------------------
+
+Write-Host ""
+Write-Host "========================================================" -ForegroundColor Green
+Write-Host " WN11-CC-000190 - PASS"
+Write-Host "========================================================" -ForegroundColor Green
+Write-Host ""
+
+Write-Host "Local Group Policy : Configured"
+Write-Host "Registry.pol       : Verified"
+Write-Host "NoDriveTypeAutoRun : REG_DWORD 0xFF (255)"
+Write-Host ""
+
+Write-Host "Close gpedit.msc if it is open, then reopen it."
+Write-Host ""
+Write-Host "Navigate to:"
+Write-Host ""
+Write-Host "Computer Configuration"
+Write-Host " > Administrative Templates"
+Write-Host " > Windows Components"
+Write-Host " > AutoPlay Policies"
+Write-Host ""
+Write-Host '"Turn off AutoPlay" should show Enabled.'
+Write-Host ""
+Write-Host 'Inside the policy, the option should be "All drives".'
+Write-Host ""
 
