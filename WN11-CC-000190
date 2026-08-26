@@ -24,83 +24,126 @@
     Put any usage instructions here.
     Example syntax:
     PS C:\> .\STIG-ID-WN11-CC-000190.ps1 
+
+   
+
+<#
+.SYNOPSIS
+    Remediates STIG WN11-CC-000190.
+
+.DESCRIPTION
+    Configures:
+
+    Computer Configuration
+      > Administrative Templates
+      > Windows Components
+      > AutoPlay Policies
+      > Turn off AutoPlay
+
+    Required setting:
+      Enabled
+      Turn off AutoPlay on: All drives
+
+    Required registry value:
+
+    HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer
+
+    NoDriveTypeAutoRun = 255 (REG_DWORD)
+
+.NOTES
+    STIG-ID : WN11-CC-000190
+    Version : 5.0
 #>
-
-# YOUR CODE GOES HERE
-
-
-# =====================================================================
-# STIG ID: WN11-CC-000190
-#
-# Turn off AutoPlay = Enabled: All drives
-#
-# Required registry setting:
-# HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer
-#
-# NoDriveTypeAutoRun = 255 (REG_DWORD)
-#
-# This script:
-#   1. Uses existing LGPO.exe or downloads it from Microsoft
-#   2. Verifies LGPO.exe is Microsoft-signed
-#   3. Writes the setting into Local Group Policy
-#   4. Runs gpupdate
-#   5. Verifies Registry.pol
-#   6. Verifies the effective STIG registry value
-# =====================================================================
 
 $ErrorActionPreference = "Stop"
 
-# ---------------------------------------------------------------------
+# ================================================================
 # VARIABLES
-# ---------------------------------------------------------------------
+# ================================================================
 
 $STIGFolder = "C:\STIG"
-$LGPOZip    = Join-Path $STIGFolder "LGPO.zip"
-$ExtractDir = Join-Path $STIGFolder "LGPO"
 
-$PolicyKey = "SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer"
+$PolicyKey =
+"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer"
 
-$RegPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer"
+$RegistryPath =
+"HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer"
 
 $ValueName     = "NoDriveTypeAutoRun"
 $RequiredValue = 255
 
-$RegistryPol = "$env:SystemRoot\System32\GroupPolicy\Machine\Registry.pol"
+$MachineRegistryPol =
+"$env:SystemRoot\System32\GroupPolicy\Machine\Registry.pol"
 
-$PolicyFile = Join-Path $STIGFolder "WN11-CC-000190-LGPO.txt"
+$TempLGPOText =
+Join-Path $env:TEMP "WN11-CC-000190.txt"
+
+$TempRegistryPol =
+Join-Path $env:TEMP "WN11-CC-000190-Registry.pol"
+
+$LGPOZip =
+Join-Path $STIGFolder "LGPO.zip"
+
+$LGPOExtract =
+Join-Path $STIGFolder "LGPO"
 
 
-# ---------------------------------------------------------------------
-# ADMINISTRATOR CHECK
-# ---------------------------------------------------------------------
+# ================================================================
+# ERROR FUNCTION
+# ================================================================
 
-$Identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+function Stop-STIGScript {
 
-$Principal = New-Object Security.Principal.WindowsPrincipal($Identity)
+    param(
+        [string]$Message
+    )
 
-if (-not $Principal.IsInRole(
-    [Security.Principal.WindowsBuiltInRole]::Administrator
-)) {
     Write-Host ""
-    Write-Host "ERROR: Run PowerShell as Administrator." -ForegroundColor Red
+    Write-Host "====================================================" -ForegroundColor Red
+    Write-Host " WN11-CC-000190 - ERROR"
+    Write-Host "====================================================" -ForegroundColor Red
+    Write-Host ""
+    Write-Host $Message -ForegroundColor Red
+    Write-Host ""
+
+    Read-Host "Press ENTER to close"
     exit 1
 }
 
 
+# ================================================================
+# ADMINISTRATOR CHECK
+# ================================================================
+
+$Identity =
+[Security.Principal.WindowsIdentity]::GetCurrent()
+
+$Principal =
+New-Object Security.Principal.WindowsPrincipal($Identity)
+
+if (-not $Principal.IsInRole(
+    [Security.Principal.WindowsBuiltInRole]::Administrator
+)) {
+
+    Stop-STIGScript `
+        "PowerShell must be run as Administrator."
+}
+
+
 Write-Host ""
-Write-Host "========================================================" -ForegroundColor Cyan
-Write-Host " WN11-CC-000190 Automated Remediation"
-Write-Host "========================================================" -ForegroundColor Cyan
+Write-Host "====================================================" -ForegroundColor Cyan
+Write-Host " WN11-CC-000190 REMEDIATION"
+Write-Host "====================================================" -ForegroundColor Cyan
 Write-Host ""
 
 
-# ---------------------------------------------------------------------
-# CREATE WORKING DIRECTORY
-# ---------------------------------------------------------------------
+# ================================================================
+# CREATE STIG DIRECTORY
+# ================================================================
 
 if (-not (Test-Path $STIGFolder)) {
 
-    Write-Host "Creating $STIGFolder..." -ForegroundColor Cyan
+    Write-Host "[1] Creating C:\STIG..." -ForegroundColor Cyan
 
     New-Item `
         -Path $STIGFolder `
@@ -110,9 +153,12 @@ if (-not (Test-Path $STIGFolder)) {
 }
 
 
-# ---------------------------------------------------------------------
-# FIND EXISTING LGPO.EXE
-# ---------------------------------------------------------------------
+# ================================================================
+# SEARCH FOR LGPO.EXE
+# ================================================================
+
+Write-Host "[2] Searching for LGPO.exe..." `
+    -ForegroundColor Cyan
 
 $LGPO = Get-ChildItem `
     -Path $STIGFolder `
@@ -123,137 +169,150 @@ $LGPO = Get-ChildItem `
     Select-Object -First 1 -ExpandProperty FullName
 
 
-# ---------------------------------------------------------------------
-# DOWNLOAD LGPO IF NOT PRESENT
-# ---------------------------------------------------------------------
+if (-not $LGPO) {
+
+    $PossiblePaths = @(
+        "$PSScriptRoot\LGPO.exe",
+        "C:\Windows\System32\LGPO.exe",
+        "C:\Tools\LGPO.exe",
+        "C:\LGPO\LGPO.exe"
+    )
+
+    $LGPO =
+    $PossiblePaths |
+    Where-Object { Test-Path $_ } |
+    Select-Object -First 1
+}
+
+
+# ================================================================
+# DOWNLOAD LGPO IF MISSING
+# ================================================================
 
 if (-not $LGPO) {
 
+    Write-Host ""
     Write-Host "LGPO.exe not found." -ForegroundColor Yellow
-    Write-Host "Downloading Microsoft LGPO.zip..." -ForegroundColor Cyan
+    Write-Host "Downloading Microsoft LGPO utility..." -ForegroundColor Cyan
     Write-Host ""
 
-    $LGPOUrl = "https://download.microsoft.com/download/8/5/C/85C25433-A1B0-4FFA-9429-7E023E7DA8D8/LGPO.zip"
+    $LGPOUrl =
+    "https://download.microsoft.com/download/8/5/C/85C25433-A1B0-4FFA-9429-7E023E7DA8D8/LGPO.zip"
 
     try {
 
-        [Net.ServicePointManager]::SecurityProtocol = `
-            [Net.ServicePointManager]::SecurityProtocol -bor `
-            [Net.SecurityProtocolType]::Tls12
+        [Net.ServicePointManager]::SecurityProtocol =
+        [Net.ServicePointManager]::SecurityProtocol -bor
+        [Net.SecurityProtocolType]::Tls12
 
         Invoke-WebRequest `
             -Uri $LGPOUrl `
             -OutFile $LGPOZip `
             -UseBasicParsing
-
     }
     catch {
 
-        Write-Host ""
-        Write-Host "ERROR: Unable to download LGPO.zip." -ForegroundColor Red
-        Write-Host $_.Exception.Message -ForegroundColor Red
-        exit 1
+        Stop-STIGScript `
+            "Failed to download LGPO.zip. $($_.Exception.Message)"
     }
 
 
     if (-not (Test-Path $LGPOZip)) {
 
-        Write-Host "ERROR: LGPO.zip was not downloaded." -ForegroundColor Red
-        exit 1
+        Stop-STIGScript `
+            "LGPO.zip was not downloaded."
     }
 
 
-    Write-Host "Download completed:" -ForegroundColor Green
-    Write-Host $LGPOZip
+    Write-Host "    Download complete." `
+        -ForegroundColor Green
+
     Write-Host ""
 
 
-    # -----------------------------------------------------------------
+    # ============================================================
     # EXTRACT LGPO
-    # -----------------------------------------------------------------
+    # ============================================================
 
-    Write-Host "Extracting LGPO.zip..." -ForegroundColor Cyan
+    Write-Host "[3] Extracting LGPO.zip..." `
+        -ForegroundColor Cyan
 
-    if (Test-Path $ExtractDir) {
+    if (Test-Path $LGPOExtract) {
 
         Remove-Item `
-            $ExtractDir `
+            $LGPOExtract `
             -Recurse `
             -Force
     }
 
     Expand-Archive `
         -Path $LGPOZip `
-        -DestinationPath $ExtractDir `
+        -DestinationPath $LGPOExtract `
         -Force
 
 
-    # -----------------------------------------------------------------
-    # LOCATE LGPO.EXE
-    # -----------------------------------------------------------------
-
-    $LGPO = Get-ChildItem `
-        -Path $ExtractDir `
+    $LGPO =
+    Get-ChildItem `
+        -Path $LGPOExtract `
         -Filter "LGPO.exe" `
         -File `
-        -Recurse |
+        -Recurse `
+        -ErrorAction SilentlyContinue |
         Select-Object -First 1 -ExpandProperty FullName
 
 
     if (-not $LGPO) {
 
-        Write-Host ""
-        Write-Host "ERROR: LGPO.exe was not found after extraction." `
-            -ForegroundColor Red
-
-        exit 1
+        Stop-STIGScript `
+            "LGPO.exe was not found after extraction."
     }
 }
 
 
-Write-Host "LGPO.exe located:" -ForegroundColor Green
+Write-Host ""
+Write-Host "LGPO.exe found:" -ForegroundColor Green
 Write-Host $LGPO
 Write-Host ""
 
 
-# ---------------------------------------------------------------------
-# VERIFY MICROSOFT DIGITAL SIGNATURE
-# ---------------------------------------------------------------------
+# ================================================================
+# VERIFY MICROSOFT SIGNATURE
+# ================================================================
 
-Write-Host "Checking LGPO.exe digital signature..." -ForegroundColor Cyan
+Write-Host "[4] Verifying LGPO.exe digital signature..." `
+    -ForegroundColor Cyan
 
-$Signature = Get-AuthenticodeSignature $LGPO
-
-Write-Host "Signature Status : $($Signature.Status)"
-Write-Host "Signer           : $($Signature.SignerCertificate.Subject)"
-Write-Host ""
+$Signature =
+Get-AuthenticodeSignature $LGPO
 
 
 if ($Signature.Status -ne "Valid") {
 
-    Write-Host "ERROR: LGPO.exe does not have a valid digital signature." `
-        -ForegroundColor Red
-
-    exit 1
+    Stop-STIGScript `
+        "LGPO.exe does not have a valid digital signature."
 }
 
 
 if ($Signature.SignerCertificate.Subject -notmatch "Microsoft") {
 
-    Write-Host "ERROR: LGPO.exe is not signed by Microsoft." `
-        -ForegroundColor Red
-
-    exit 1
+    Stop-STIGScript `
+        "LGPO.exe is not signed by Microsoft."
 }
 
 
-Write-Host "PASS: Microsoft signature verified." -ForegroundColor Green
+Write-Host "    Microsoft signature verified." `
+    -ForegroundColor Green
+
 Write-Host ""
 
 
-# ---------------------------------------------------------------------
-# CREATE LGPO POLICY FILE
-# ---------------------------------------------------------------------
+# ================================================================
+# CREATE LGPO TEXT FILE
+# ================================================================
+
+Write-Host "[5] Creating LGPO policy definition..." `
+    -ForegroundColor Cyan
+
 
 $PolicyText = @(
     "Computer"
@@ -265,127 +324,224 @@ $PolicyText = @(
 
 
 [System.IO.File]::WriteAllText(
-    $PolicyFile,
+    $TempLGPOText,
     $PolicyText,
     [System.Text.Encoding]::ASCII
 )
 
 
-Write-Host "Policy file created:" -ForegroundColor Cyan
-Write-Host $PolicyFile
+Write-Host ""
+Write-Host "Policy definition:"
+Write-Host "----------------------------------------------------"
+
+Get-Content $TempLGPOText |
+    Out-Host
+
+Write-Host "----------------------------------------------------"
 Write-Host ""
 
-Get-Content $PolicyFile | Out-Host
+
+# ================================================================
+# BUILD TEMPORARY REGISTRY.POL
+# ================================================================
+
+Write-Host "[6] Building temporary Registry.pol..." `
+    -ForegroundColor Cyan
 
 
-# ---------------------------------------------------------------------
-# APPLY POLICY USING LGPO
-# ---------------------------------------------------------------------
+if (Test-Path $TempRegistryPol) {
 
-Write-Host ""
-Write-Host "Applying policy to Local Group Policy..." -ForegroundColor Cyan
-Write-Host ""
-
-& $LGPO /v /t $PolicyFile
-
-$LGPOExit = $LASTEXITCODE
-
-
-if ($LGPOExit -ne 0) {
-
-    Write-Host ""
-    Write-Host "ERROR: LGPO.exe returned exit code $LGPOExit." `
-        -ForegroundColor Red
-
-    exit 1
+    Remove-Item `
+        $TempRegistryPol `
+        -Force
 }
 
 
-Write-Host ""
-Write-Host "LGPO policy import completed successfully." `
+& $LGPO `
+    /r $TempLGPOText `
+    /w $TempRegistryPol `
+    /v
+
+
+$BuildExitCode =
+$LASTEXITCODE
+
+
+if ($BuildExitCode -ne 0) {
+
+    Stop-STIGScript `
+        "LGPO failed to build the temporary Registry.pol. Exit code: $BuildExitCode"
+}
+
+
+if (-not (Test-Path $TempRegistryPol)) {
+
+    Stop-STIGScript `
+        "Temporary Registry.pol was not created."
+}
+
+
+Write-Host "    Temporary Registry.pol created." `
     -ForegroundColor Green
 
+Write-Host ""
 
-# ---------------------------------------------------------------------
-# FORCE GROUP POLICY UPDATE
-# ---------------------------------------------------------------------
+
+# ================================================================
+# IMPORT INTO LOCAL MACHINE POLICY
+# ================================================================
+
+Write-Host "[7] Importing WN11-CC-000190 into Local Group Policy..." `
+    -ForegroundColor Cyan
+
+
+& $LGPO `
+    /m $TempRegistryPol `
+    /v
+
+
+$ImportExitCode =
+$LASTEXITCODE
+
+
+if ($ImportExitCode -ne 0) {
+
+    Stop-STIGScript `
+        "LGPO failed to import WN11-CC-000190. Exit code: $ImportExitCode"
+}
+
+
+Write-Host "    Local Group Policy import succeeded." `
+    -ForegroundColor Green
 
 Write-Host ""
-Write-Host "Running Group Policy update..." -ForegroundColor Cyan
+
+
+# ================================================================
+# VERIFY ACTIVE REGISTRY.POL
+# ================================================================
+
+Write-Host "[8] Verifying active Registry.pol..." `
+    -ForegroundColor Cyan
+
+
+if (-not (Test-Path $MachineRegistryPol)) {
+
+    Stop-STIGScript `
+        "Active Machine Registry.pol was not found."
+}
+
+
+$ParsedPolicy =
+& $LGPO `
+    /parse `
+    /m $MachineRegistryPol
+
+
+$ParsedText =
+$ParsedPolicy -join "`n"
+
+
+if (
+    $ParsedText -notmatch [regex]::Escape($PolicyKey) -or
+    $ParsedText -notmatch [regex]::Escape($ValueName)
+) {
+
+    Stop-STIGScript `
+        "WN11-CC-000190 was not found in active Registry.pol."
+}
+
+
+Write-Host "    WN11-CC-000190 found in Registry.pol." `
+    -ForegroundColor Green
+
 Write-Host ""
+
+
+# ================================================================
+# FORCE EXACT STIG / TENABLE REGISTRY VALUE
+# ================================================================
+
+Write-Host "[9] Writing required STIG registry value..." `
+    -ForegroundColor Cyan
+
+
+if (-not (Test-Path $RegistryPath)) {
+
+    New-Item `
+        -Path $RegistryPath `
+        -Force |
+        Out-Null
+}
+
+
+New-ItemProperty `
+    -Path $RegistryPath `
+    -Name $ValueName `
+    -PropertyType DWord `
+    -Value $RequiredValue `
+    -Force |
+    Out-Null
+
+
+$CurrentValue =
+(
+    Get-ItemProperty `
+        -Path $RegistryPath `
+        -Name $ValueName `
+        -ErrorAction Stop
+).$ValueName
+
+
+if ($CurrentValue -ne $RequiredValue) {
+
+    Stop-STIGScript `
+        "NoDriveTypeAutoRun could not be set to DWORD 255."
+}
+
+
+Write-Host "    NoDriveTypeAutoRun = 255 (0xFF)." `
+    -ForegroundColor Green
+
+Write-Host ""
+
+
+# ================================================================
+# RUN GPUPDATE
+# ================================================================
+
+Write-Host "[10] Running GPUPDATE..." `
+    -ForegroundColor Cyan
+
+Write-Host ""
+
 
 gpupdate.exe /target:computer /force
 
-if ($LASTEXITCODE -ne 0) {
 
-    Write-Host ""
-    Write-Host "WARNING: gpupdate returned exit code $LASTEXITCODE." `
-        -ForegroundColor Yellow
-}
+$GPUpdateExit =
+$LASTEXITCODE
 
-
-# ---------------------------------------------------------------------
-# VERIFY REGISTRY.POL
-# ---------------------------------------------------------------------
 
 Write-Host ""
-Write-Host "Checking Machine Registry.pol..." -ForegroundColor Cyan
+Write-Host "GPUPDATE Exit Code: $GPUpdateExit"
 Write-Host ""
 
 
-if (-not (Test-Path $RegistryPol)) {
+# ================================================================
+# VERIFY AFTER GPUPDATE
+# ================================================================
 
-    Write-Host "FAIL: Registry.pol does not exist." -ForegroundColor Red
-    exit 1
-}
-
-
-$ParsedPolicy = & $LGPO /parse /m $RegistryPol
-
-$ParsedPolicy | Out-Host
-
-
-$PolicyKeyFound = $ParsedPolicy -match `
-    [regex]::Escape($PolicyKey)
-
-$ValueFound = $ParsedPolicy -match `
-    [regex]::Escape($ValueName)
-
-$DWORDFound = $ParsedPolicy -match `
-    "DWORD:255"
-
-
-if ($PolicyKeyFound -and $ValueFound -and $DWORDFound) {
-
-    Write-Host ""
-    Write-Host "PASS: Setting exists in Local Group Policy Registry.pol." `
-        -ForegroundColor Green
-
-}
-else {
-
-    Write-Host ""
-    Write-Host "FAIL: Setting was not found in Registry.pol." `
-        -ForegroundColor Red
-
-    exit 1
-}
-
-
-# ---------------------------------------------------------------------
-# VERIFY EFFECTIVE REGISTRY VALUE
-# ---------------------------------------------------------------------
-
-Write-Host ""
-Write-Host "Checking effective STIG registry value..." `
+Write-Host "[11] Verifying registry after GPUPDATE..." `
     -ForegroundColor Cyan
 
 
 try {
 
-    $CurrentValue = (
+    $PostGPValue =
+    (
         Get-ItemProperty `
-            -Path $RegPath `
+            -Path $RegistryPath `
             -Name $ValueName `
             -ErrorAction Stop
     ).$ValueName
@@ -393,77 +549,116 @@ try {
 }
 catch {
 
-    Write-Host ""
-    Write-Host "FAIL: NoDriveTypeAutoRun does not exist." `
-        -ForegroundColor Red
-
-    exit 1
+    Stop-STIGScript `
+        "NoDriveTypeAutoRun disappeared after GPUPDATE."
 }
 
 
-Write-Host ""
-Write-Host "Registry Path : HKLM\$PolicyKey"
-Write-Host "Value Name    : $ValueName"
-Write-Host "Value Type    : REG_DWORD"
-Write-Host "Required      : $RequiredValue"
-Write-Host "Actual        : $CurrentValue"
-Write-Host ""
+if ($PostGPValue -ne $RequiredValue) {
 
-
-if ($CurrentValue -eq $RequiredValue) {
-
-    Write-Host "PASS: Effective registry value is correct." `
-        -ForegroundColor Green
-
-}
-else {
-
-    Write-Host "FAIL: Effective registry value is incorrect." `
-        -ForegroundColor Red
-
-    exit 1
+    Stop-STIGScript `
+        "NoDriveTypeAutoRun changed after GPUPDATE."
 }
 
 
-# ---------------------------------------------------------------------
-# REG.EXE VERIFICATION
-# ---------------------------------------------------------------------
+Write-Host `
+    "    NoDriveTypeAutoRun remains DWORD 255 after GPUPDATE." `
+    -ForegroundColor Green
 
 Write-Host ""
-Write-Host "REG.EXE verification:" -ForegroundColor Cyan
+
+
+# ================================================================
+# FINAL TENABLE-STYLE REGISTRY CHECK
+# ================================================================
+
+Write-Host "[12] Final registry verification..." `
+    -ForegroundColor Cyan
+
 Write-Host ""
 
-reg query `
+
+reg.exe query `
     "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer" `
     /v NoDriveTypeAutoRun
 
 
-# ---------------------------------------------------------------------
+if ($LASTEXITCODE -ne 0) {
+
+    Stop-STIGScript `
+        "REG.EXE could not verify NoDriveTypeAutoRun."
+}
+
+
+# ================================================================
 # FINAL RESULT
-# ---------------------------------------------------------------------
+# ================================================================
 
 Write-Host ""
-Write-Host "========================================================" -ForegroundColor Green
+Write-Host "====================================================" `
+    -ForegroundColor Green
+
 Write-Host " WN11-CC-000190 - PASS"
-Write-Host "========================================================" -ForegroundColor Green
+
+Write-Host "====================================================" `
+    -ForegroundColor Green
+
 Write-Host ""
 
-Write-Host "Local Group Policy : Configured"
-Write-Host "Registry.pol       : Verified"
-Write-Host "NoDriveTypeAutoRun : REG_DWORD 0xFF (255)"
+Write-Host "Local Group Policy : CONFIGURED" `
+    -ForegroundColor Green
+
+Write-Host "Registry.pol       : VERIFIED" `
+    -ForegroundColor Green
+
+Write-Host "NoDriveTypeAutoRun : REG_DWORD 0xFF (255)" `
+    -ForegroundColor Green
+
+Write-Host "Post-GPUPDATE      : VERIFIED" `
+    -ForegroundColor Green
+
 Write-Host ""
 
-Write-Host "Close gpedit.msc if it is open, then reopen it."
+Write-Host "GPEDIT should show:"
 Write-Host ""
-Write-Host "Navigate to:"
+
+Write-Host `
+'"Turn off AutoPlay" = Enabled' `
+    -ForegroundColor Green
+
+Write-Host `
+'"Turn off AutoPlay on:" = All drives' `
+    -ForegroundColor Green
+
 Write-Host ""
-Write-Host "Computer Configuration"
-Write-Host " > Administrative Templates"
-Write-Host " > Windows Components"
-Write-Host " > AutoPlay Policies"
+
+Write-Host "Tenable should see:"
 Write-Host ""
-Write-Host '"Turn off AutoPlay" should show Enabled.'
+
+Write-Host `
+"NoDriveTypeAutoRun    REG_DWORD    0xff" `
+    -ForegroundColor Green
+
 Write-Host ""
-Write-Host 'Inside the policy, the option should be "All drives".'
-Write-Host ""
+
+
+# ================================================================
+# CLEANUP
+# ================================================================
+
+Remove-Item `
+    $TempLGPOText `
+    -Force `
+    -ErrorAction SilentlyContinue
+
+
+Remove-Item `
+    $TempRegistryPol `
+    -Force `
+    -ErrorAction SilentlyContinue
+
+
+Read-Host "Press ENTER to close"
+
+   
 
