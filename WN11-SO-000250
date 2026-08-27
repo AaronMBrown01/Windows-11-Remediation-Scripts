@@ -21,31 +21,205 @@
     Systems Tested  : 
     PowerShell Ver. : 
 
-.USAGE
-    Put any usage instructions here.
-    Example syntax:
-    PS C:\> .\STIG-ID-WN11-SO-000250.ps1 
+<#
+.SYNOPSIS
+    This PowerShell script ensures Windows 11 configures User Account Control (UAC) 
+    to prompt administrators for consent on the secure desktop (WN11-SO-000250).
+
+.NOTES
+    STIG-ID         : WN11-SO-000250
+    Version         : 2.0
+    Description     : Applies ConsentPromptBehaviorAdmin = 2 (Prompt for consent on the 
+                      secure desktop) to live registry and imports into Local Security 
+                      Policy database via secedit to satisfy Tenable audits.
 #>
 
-# YOUR CODE GOES HERE
+$ErrorActionPreference = "Stop"
+
+# ================================================================
+# VARIABLES
+# ================================================================
+
+$STIGFolder     = "C:\STIG"
+$RegistryPath   = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
+$ValueName      = "ConsentPromptBehaviorAdmin"
+$RequiredValue  = 2
+$SeceditCfgTemp = Join-Path $env:TEMP "WN11-SO-000250-secpol.inf"
+$SeceditSdbTemp = Join-Path $env:TEMP "WN11-SO-000250-secpol.sdb"
 
 
-# Ensure administrative privileges
-if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Write-Error "This script must be run as an Administrator."
+# ================================================================
+# HELPER FUNCTION
+# ================================================================
+
+function Stop-STIGScript {
+    param(
+        [string]$Message
+    )
+
+    Write-Host ""
+    Write-Host "====================================================" -ForegroundColor Red
+    Write-Host " WN11-SO-000250 - ERROR" -ForegroundColor Red
+    Write-Host "====================================================" -ForegroundColor Red
+    Write-Host ""
+    Write-Host $Message -ForegroundColor Red
+    Write-Host ""
+
+    Read-Host "Press ENTER to close"
     exit 1
 }
 
-$RegistryPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
-$ValueName    = "ConsentPromptBehaviorAdmin"
-$DesiredValue = 2
 
-# Create registry key path if missing
-if (-not (Test-Path -Path $RegistryPath)) {
+# ================================================================
+# ADMINISTRATOR CHECK
+# ================================================================
+
+$Identity  = [Security.Principal.WindowsIdentity]::GetCurrent()
+$Principal = New-Object Security.Principal.WindowsPrincipal($Identity)
+
+if (-not $Principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Stop-STIGScript "PowerShell must be run as Administrator."
+}
+
+Write-Host ""
+Write-Host "====================================================" -ForegroundColor Cyan
+Write-Host " WN11-SO-000250 REMEDIATION & VERIFICATION" -ForegroundColor Cyan
+Write-Host "====================================================" -ForegroundColor Cyan
+Write-Host ""
+
+
+# ================================================================
+# CREATE STIG DIRECTORY
+# ================================================================
+
+if (-not (Test-Path $STIGFolder)) {
+    New-Item -Path $STIGFolder -ItemType Directory -Force | Out-Null
+}
+
+
+# ================================================================
+# [1] DIRECT REGISTRY ENFORCEMENT
+# ================================================================
+
+Write-Host "[1] Writing system registry value..." -ForegroundColor Cyan
+
+if (-not (Test-Path $RegistryPath)) {
     New-Item -Path $RegistryPath -Force | Out-Null
 }
 
-# Apply the security policy value as a DWORD (REG_DWORD)
-Set-ItemProperty -Path $RegistryPath -Name $ValueName -Value $DesiredValue -Type DWord -Force
+Set-ItemProperty -Path $RegistryPath -Name $ValueName -Value $RequiredValue -Type DWord -Force
 
-Write-Host "STIG WN11-SO-000250 applied successfully. ConsentPromptBehaviorAdmin set to $DesiredValue (Prompt for consent on the secure desktop)." -ForegroundColor Green
+$CurrentRegVal = (Get-ItemProperty -Path $RegistryPath -Name $ValueName -ErrorAction Stop).$ValueName
+
+if ($CurrentRegVal -ne $RequiredValue) {
+    Stop-STIGScript "Failed to write ConsentPromptBehaviorAdmin to registry."
+}
+
+Write-Host "    HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\$ValueName = $RequiredValue" -ForegroundColor Green
+Write-Host ""
+
+
+# ================================================================
+# [2] UPDATE LOCAL SECURITY POLICY DATABASE (SECEDIT)
+# ================================================================
+
+Write-Host "[2] Updating Local Security Policy Database (Secedit)..." -ForegroundColor Cyan
+
+try {
+    # Export current local security policy template
+    secedit /export /cfg $SeceditCfgTemp /quiet
+
+    # Read configuration content
+    $cfgContent = Get-Content -Path $SeceditCfgTemp -Raw
+
+    # Targeted line for UAC Behavior
+    $targetLine = "MACHINE\Software\Microsoft\Windows\CurrentVersion\Policies\System\ConsentPromptBehaviorAdmin=4,$RequiredValue"
+
+    # Replace or insert into [Registry Values] section
+    if ($cfgContent -match "MACHINE\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\\ConsentPromptBehaviorAdmin\s*=\s*.*") {
+        $cfgContent = $cfgContent -replace "MACHINE\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\\ConsentPromptBehaviorAdmin\s*=\s*.*", $targetLine
+    } elseif ($cfgContent -match "\[Registry Values\]") {
+        $cfgContent = $cfgContent -replace "\[Registry Values\]", "[Registry Values]`r`n$targetLine"
+    } else {
+        $cfgContent += "`r`n[Registry Values]`r`n$targetLine"
+    }
+
+    # Save modified configuration using ASCII encoding
+    Set-Content -Path $SeceditCfgTemp -Value $cfgContent -Encoding ASCII
+
+    # Import policy back into Security Account Manager / LSA database
+    secedit /configure /db $SeceditSdbTemp /cfg $SeceditCfgTemp /areas SECURITYPOLICY /quiet
+    Write-Host "    Secedit import completed successfully." -ForegroundColor Green
+}
+catch {
+    Stop-STIGScript "Secedit failed to import security configuration: $_"
+}
+finally {
+    Remove-Item $SeceditCfgTemp, $SeceditSdbTemp -Force -ErrorAction SilentlyContinue
+}
+
+Write-Host ""
+
+
+# ================================================================
+# [3] GROUP POLICY REFRESH
+# ================================================================
+
+Write-Host "[3] Running GPUPDATE..." -ForegroundColor Cyan
+
+gpupdate.exe /target:computer /force | Out-Null
+
+Write-Host "    Group Policy update complete." -ForegroundColor Green
+Write-Host ""
+
+
+# ================================================================
+# [4] RE-VERIFY AFTER GPUPDATE
+# ================================================================
+
+Write-Host "[4] Re-checking registry state post-GPUPDATE..." -ForegroundColor Cyan
+
+try {
+    $PostGPValue = (Get-ItemProperty -Path $RegistryPath -Name $ValueName -ErrorAction Stop).$ValueName
+}
+catch {
+    Stop-STIGScript "ConsentPromptBehaviorAdmin key disappeared after Group Policy processing."
+}
+
+if ($PostGPValue -ne $RequiredValue) {
+    Stop-STIGScript "ConsentPromptBehaviorAdmin was overridden after Group Policy processing."
+}
+
+Write-Host "    ConsentPromptBehaviorAdmin remains DWORD 2 after GPUPDATE." -ForegroundColor Green
+Write-Host ""
+
+
+# ================================================================
+# [5] REG.EXE FINAL VERIFICATION
+# ================================================================
+
+Write-Host "[5] Performing final REG.EXE query..." -ForegroundColor Cyan
+
+reg.exe query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v ConsentPromptBehaviorAdmin | Out-Host
+
+if ($LASTEXITCODE -ne 0) {
+    Stop-STIGScript "REG.EXE query failed to confirm ConsentPromptBehaviorAdmin."
+}
+
+
+# ================================================================
+# FINAL RESULT
+# ================================================================
+
+Write-Host ""
+Write-Host "====================================================" -ForegroundColor Green
+Write-Host " WN11-SO-000250 - PASS" -ForegroundColor Green
+Write-Host "====================================================" -ForegroundColor Green
+Write-Host ""
+Write-Host "Local Security Policy : CONFIGURED" -ForegroundColor Green
+Write-Host "UI Policy Setting     : Prompt for consent on the secure desktop" -ForegroundColor Green
+Write-Host "Registry Value        : REG_DWORD 0x2" -ForegroundColor Green
+Write-Host "Post-GPUPDATE State   : VERIFIED" -ForegroundColor Green
+Write-Host ""
+
+Read-Host "Press ENTER to close"
